@@ -10,33 +10,61 @@ const statDone = document.querySelector('[data-stat="done"]');
 const statActive = document.querySelector('[data-stat="active"]');
 const filterButtons = document.querySelectorAll("[data-filter]");
 
-let todos = [
-  {
-    id: 1,
-    title: "Express bilan TODO API yozish",
-    description:
-      "CRUD endpointlar: GET (pagination), POST, PATCH, DELETE. UI’dan ishlatib ko‘rish.",
-    completed: false,
-    created: "2026-05-14",
-  },
-  {
-    id: 2,
-    title: "Swagger response formatni tushunish",
-    description: "API response: count, next, previous, results bilan keladi.",
-    completed: true,
-    created: "2026-05-13",
-  },
-];
+const API_URL = "https://biyovo1194.pythonanywhere.com/api/v1/todos";
 
+let todos = [];
 let currentFilter = "all";
 let editId = null;
 
-function getTodayDate() {
-  const today = new Date();
-  const yyyy = today.getFullYear();
-  const mm = String(today.getMonth() + 1).padStart(2, "0");
-  const dd = String(today.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+function loadLocalTodos() {
+  const localData = localStorage.getItem("local_todos");
+  if (localData) {
+    todos = JSON.parse(localData);
+  } else {
+    todos = [
+      {
+        id: 1,
+        title: "Express bilan TODO API yozish",
+        description: "CRUD endpointlar...",
+        completed: false,
+        created: "2026-05-14",
+      },
+      {
+        id: 2,
+        title: "Swagger response formatni tushunish",
+        description: "API response...",
+        completed: true,
+        created: "2026-05-13",
+      },
+    ];
+  }
+  updateInterface();
+}
+
+function saveLocalTodos() {
+  localStorage.setItem("local_todos", JSON.stringify(todos));
+}
+
+async function fetchTodos() {
+  try {
+    const response = await fetch(API_URL).catch(() => null);
+    if (!response || !response.ok) {
+      loadLocalTodos();
+      return;
+    }
+
+    const data = await response.json();
+    if (Array.isArray(data)) {
+      todos = data;
+    } else if (data && Array.isArray(data.results)) {
+      todos = data.results;
+    }
+
+    saveLocalTodos();
+    updateInterface();
+  } catch (error) {
+    loadLocalTodos();
+  }
 }
 
 function updateInterface() {
@@ -72,6 +100,12 @@ function renderTodos(todoItems) {
     li.setAttribute("data-id", todo.id);
     li.setAttribute("data-completed", todo.completed);
 
+    const displayDate = (
+      todo.created ||
+      todo.created_at ||
+      new Date().toISOString()
+    ).substring(0, 10);
+
     li.innerHTML = `
       <button class="check ${todo.completed ? "is-checked" : ""}" type="button" aria-label="Toggle status" data-action="toggle">
         <span class="check-icon" aria-hidden="true">${todo.completed ? "✓" : ""}</span>
@@ -84,7 +118,7 @@ function renderTodos(todoItems) {
             ${todo.completed ? "Completed" : "Active"}
           </span>
         </div>
-        <p class="todo-desc">${todo.description}</p>
+        <p class="todo-desc">${todo.description || ""}</p>
 
         <div class="meta">
           <span class="meta-item">
@@ -93,7 +127,7 @@ function renderTodos(todoItems) {
           </span>
           <span class="meta-item">
             <span class="meta-label">Created:</span>
-            <span class="meta-value">${todo.created}</span>
+            <span class="meta-value">${displayDate}</span>
           </span>
         </div>
       </div>
@@ -108,7 +142,7 @@ function renderTodos(todoItems) {
   });
 }
 
-createForm.addEventListener("submit", (e) => {
+createForm.addEventListener("submit", async (e) => {
   e.preventDefault();
 
   const title = titleInput.value.trim();
@@ -117,29 +151,53 @@ createForm.addEventListener("submit", (e) => {
   if (!title) return alert("Iltimos, title kiriting!");
 
   if (editId !== null) {
-    todos = todos.map((todo) => {
-      if (todo.id === editId) {
-        return { ...todo, title, description };
-      }
-      return todo;
-    });
+    const currentTodo = todos.find((t) => t.id === editId);
+    const payload = {
+      title,
+      description,
+      completed: currentTodo ? currentTodo.completed : false,
+    };
+
+    todos = todos.map((todo) =>
+      todo.id === editId ? { ...todo, ...payload } : todo,
+    );
+
+    await fetch(`${API_URL}/${editId}/`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => null);
+
     editId = null;
     submitBtn.textContent = "Add";
   } else {
     const nextId =
       todos.length > 0 ? Math.max(...todos.map((t) => t.id)) + 1 : 1;
-
-    const newTodo = {
+    const payload = {
       id: nextId,
       title,
       description,
       completed: false,
-      created: getTodayDate(),
+      created: new Date().toISOString().substring(0, 10),
     };
 
-    todos.push(newTodo);
+    todos.push(payload);
+
+    await fetch(`${API_URL}/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, description, completed: false }),
+    })
+      .then((res) => res.json())
+      .then((newServerTodo) => {
+        if (newServerTodo && newServerTodo.id) {
+          payload.id = newServerTodo.id;
+        }
+      })
+      .catch(() => null);
   }
 
+  saveLocalTodos();
   createForm.reset();
   updateInterface();
 });
@@ -149,7 +207,7 @@ createForm.addEventListener("reset", () => {
   submitBtn.textContent = "Add";
 });
 
-todoListContainer.addEventListener("click", (e) => {
+todoListContainer.addEventListener("click", async (e) => {
   const target = e.target;
   const actionButton = target.closest("[data-action]");
   if (!actionButton) return;
@@ -159,24 +217,33 @@ todoListContainer.addEventListener("click", (e) => {
   const action = actionButton.getAttribute("data-action");
 
   if (action === "delete") {
+    if (!confirm("Haqiqatdan ham o'chirmoqchimisiz?")) return;
     todos = todos.filter((todo) => todo.id !== id);
-    if (editId === id) {
-      createForm.reset();
-    }
+    if (editId === id) createForm.reset();
+
+    await fetch(`${API_URL}/${id}/`, { method: "DELETE" }).catch(() => null);
+
+    saveLocalTodos();
     updateInterface();
   } else if (action === "toggle") {
-    todos = todos.map((todo) => {
-      if (todo.id === id) {
-        return { ...todo, completed: !todo.completed };
-      }
-      return todo;
-    });
+    const todoToToggle = todos.find((todo) => todo.id === id);
+    if (!todoToToggle) return;
+
+    todoToToggle.completed = !todoToToggle.completed;
+
+    await fetch(`${API_URL}/${id}/`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ completed: todoToToggle.completed }),
+    }).catch(() => null);
+
+    saveLocalTodos();
     updateInterface();
   } else if (action === "edit") {
     const todoToEdit = todos.find((todo) => todo.id === id);
     if (todoToEdit) {
       titleInput.value = todoToEdit.title;
-      descInput.value = todoToEdit.description;
+      descInput.value = todoToEdit.description || "";
       editId = id;
       submitBtn.textContent = "Save";
       titleInput.focus();
@@ -188,10 +255,9 @@ filterButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
     filterButtons.forEach((b) => b.classList.remove("is-active"));
     btn.classList.add("is-active");
-
     currentFilter = btn.getAttribute("data-filter");
     updateInterface();
   });
 });
 
-updateInterface();
+fetchTodos();
